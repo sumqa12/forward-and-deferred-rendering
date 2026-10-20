@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forward vs Deferred</title>
+  <meta name="description" content="フォワードレンダリングとディファードレンダリングのメリット・デメリットを WebGL2 で比較するデモ">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <main id="viewport">
+      <canvas id="gl-canvas" aria-label="レンダリング結果。ドラッグで回転、ホイールでズーム"></canvas>
+      <div class="view-label" id="label-left"><b></b><small></small></div>
+      <div class="view-label" id="label-right" hidden><b></b><small></small></div>
+      <div id="heat-legend" hidden>
+        <span>ライト計算回数 / px</span>
+        <div class="ramp"></div>
+        <div class="ticks"><span>0</span><span id="heat-mid"></span><span id="heat-max"></span></div>
+      </div>
+      <div id="hud"><span id="fps">0</span> FPS · <span id="render-size"></span></div>
+      <div id="fatal" hidden></div>
+      <button id="panel-toggle" type="button" aria-label="パネルの表示切替">☰</button>
+    </main>
+
+    <aside id="panel">
+      <header>
+        <h1>Forward vs Deferred</h1>
+        <p>同じシーン・同じライティング式を 2 つのパイプラインで描画し、得意・不得意を比較します。</p>
+      </header>
+
+      <section>
+        <h2>表示モード</h2>
+        <div class="segmented" role="group" aria-label="表示モード">
+          <button type="button" data-set-mode="forward">Forward</button>
+          <button type="button" data-set-mode="split">比較 (分割)</button>
+          <button type="button" data-set-mode="deferred">Deferred</button>
+        </div>
+        <p class="hint">比較モードでは中央の線をドラッグして境界を動かせます。</p>
+      </section>
+
+      <section>
+        <h2>シナリオ <button type="button" id="reset" class="link">初期設定に戻す</button></h2>
+        <div id="scenarios"></div>
+        <div id="scenario-note" hidden><strong></strong><p></p></div>
+      </section>
+
+      <section id="hints-section" hidden>
+        <h2>いま起きていること</h2>
+        <ul id="hints"></ul>
+      </section>
+
+      <section>
+        <h2>統計</h2>
+        <div class="stats">
+          <div class="stat-card" id="stats-forward"><h3>Forward</h3><dl></dl></div>
+          <div class="stat-card" id="stats-deferred"><h3>Deferred</h3><dl></dl></div>
+        </div>
+        <p class="hint" id="gpu-support" hidden>
+          このブラウザでは GPU 時間の計測 (EXT_disjoint_timer_query_webgl2) が使えません。
+          単独モードに切り替えて FPS で比較してください。
+        </p>
+      </section>
+
+      <section>
+        <h2>シーン</h2>
+        <label class="row">点光源の数 <output data-out="lightCount"></output>
+          <input type="range" data-opt="lightCount" min="0" max="1024" step="1"></label>
+        <label class="row">ライトの影響半径 <output data-out="lightRadius"></output>
+          <input type="range" data-opt="lightRadius" min="1" max="12" step="0.5"></label>
+        <label class="row">ライトの強さ <output data-out="lightIntensity"></output>
+          <input type="range" data-opt="lightIntensity" min="1" max="20" step="0.5"></label>
+        <label class="row">オブジェクト <output data-out="grid"></output>
+          <input type="range" data-opt="grid" min="4" max="20" step="1"></label>
+        <label class="check"><input type="checkbox" data-opt="transparent"> 半透明オブジェクト (ガラス)</label>
+        <label class="check"><input type="checkbox" data-opt="markers"> ライト位置を表示</label>
+        <label class="check"><input type="checkbox" data-opt="animate"> アニメーション</label>
+      </section>
+
+      <section>
+        <h2>Forward 設定</h2>
+        <label class="check"><input type="checkbox" data-opt="msaa"> MSAA ×4</label>
+        <label class="check"><input type="checkbox" data-opt="prepass"> Z プリパス (オーバードロー対策)</label>
+        <label class="row">1 ドローあたりの最大ライト数
+          <select data-opt="maxLightsPerPass" data-number>
+            <option value="4">4</option>
+            <option value="8">8</option>
+            <option value="16">16</option>
+            <option value="32">32</option>
+          </select></label>
+      </section>
+
+      <section>
+        <h2>Deferred 設定</h2>
+        <label class="row">半透明の扱い
+          <select data-opt="deferredTransparency">
+            <option value="hybrid">ハイブリッド (Forward で追加描画)</option>
+            <option value="gbuffer">G-buffer に書く (破綻する)</option>
+            <option value="skip">描画しない</option>
+          </select></label>
+        <label class="check"><input type="checkbox" data-opt="volumeDepthTest"> ライトボリュームの深度テスト</label>
+      </section>
+
+      <section>
+        <h2>共通 / 表示</h2>
+        <label class="row">表示
+          <select data-opt="view">
+            <option value="lit">通常</option>
+            <option value="heatmap">ライト計算回数ヒートマップ</option>
+            <option value="albedo">G-buffer: アルベド</option>
+            <option value="normal">G-buffer: 法線</option>
+            <option value="depth">G-buffer: 深度</option>
+            <option value="specular">G-buffer: スペキュラ</option>
+          </select></label>
+        <label class="row">ヒートマップ上限 <output data-out="heatMax"></output>
+          <input type="range" data-opt="heatMax" min="4" max="256" step="4"></label>
+        <label class="check"><input type="checkbox" data-opt="fxaa"> FXAA (ポストプロセス AA・両方式で可)</label>
+        <label class="row">解像度スケール <output data-out="resolutionScale"></output>
+          <input type="range" data-opt="resolutionScale" min="0.25" max="2" step="0.25"></label>
+        <label class="row">露出 <output data-out="exposure"></output>
+          <input type="range" data-opt="exposure" min="0.2" max="3" step="0.05"></label>
+      </section>
+
+      <section class="theory">
+        <h2>メリット・デメリット</h2>
+        <details open>
+          <summary>フォワードレンダリング</summary>
+          <p class="how">メッシュを描くたびに、そのメッシュに影響するライトを全部計算して色を確定する。</p>
+          <h4 class="pro">メリット</h4>
+          <ul>
+            <li>実装がシンプル。パイプラインが 1 本で済む</li>
+            <li><b>半透明</b>を自然に扱える (奥から順にブレンド)</li>
+            <li><b>MSAA</b> がそのまま使える</li>
+            <li>マテリアルごとに自由なシェーダー (ライティングモデル) を書ける</li>
+            <li>G-buffer 不要で<b>メモリ・帯域が少ない</b> (高解像度・モバイル向き)</li>
+            <li>ライトが少ないシーンでは軽い</li>
+          </ul>
+          <h4 class="con">デメリット</h4>
+          <ul>
+            <li>コストが「オブジェクト数 × ライト数」に比例し、<b>ライトが増えると急激に重くなる</b></li>
+            <li>1 パスのライト数に上限があり、超えると<b>マルチパスでドローコールが増える</b></li>
+            <li><b>オーバードロー</b>で隠れるピクセルまで計算してしまう (Z プリパスで軽減)</li>
+            <li>ライトのカリングがオブジェクト単位で粗い</li>
+          </ul>
+        </details>
+        <details open>
+          <summary>ディファードレンダリング</summary>
+          <p class="how">まず G-buffer (アルベド・法線・深度など) に表面情報だけを書き、あとからスクリーン空間でライティングする。</p>
+          <h4 class="pro">メリット</h4>
+          <ul>
+            <li>コストが「ライトの影響範囲のピクセル数」に比例し、<b>大量のライトに強い</b></li>
+            <li>見えているピクセルだけをライティングするので<b>オーバードローの影響がない</b></li>
+            <li>ジオメトリとライティングを分離でき、ライトボリュームで影響範囲だけを計算できる</li>
+            <li>G-buffer を SSAO・SSR などのスクリーン空間エフェクトに再利用できる</li>
+          </ul>
+          <h4 class="con">デメリット</h4>
+          <ul>
+            <li>G-buffer の<b>メモリ・帯域が大きい</b> (解像度に比例)</li>
+            <li><b>半透明を扱えない</b> → Forward とのハイブリッドが必要</li>
+            <li><b>MSAA が困難</b> (WebGL2 では実質不可) → FXAA / TAA などに頼る</li>
+            <li>マテリアルの種類が G-buffer のフォーマットに縛られる</li>
+            <li>ライトが少なくても G-buffer 書き込み・読み出しの固定コストがかかる</li>
+          </ul>
+        </details>
+      </section>
+
+      <footer>
+        ドラッグ: 回転 / ホイール・ピンチ: ズーム
+      </footer>
+    </aside>
+  </div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
